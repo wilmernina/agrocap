@@ -1,0 +1,1 @@
+import { app } from './app.ts'; import { env } from './config/env.ts'; import { closeDatabase } from './db/index.ts'; const server=app.listen(env.PORT,()=>console.log(`AgroCAP API en http://localhost:${env.PORT}`)); const shutdown=()=>server.close(()=>void closeDatabase().then(()=>process.exit(0))); process.on('SIGTERM',shutdown); process.on('SIGINT',shutdown);

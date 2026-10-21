@@ -1,0 +1,1 @@
+import { DashboardRepository } from './dashboard.repository.ts'; export class DashboardService { constructor(private repo=new DashboardRepository()){} summary(org:string){return this.repo.summary(org);} }

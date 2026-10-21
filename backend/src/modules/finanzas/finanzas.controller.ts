@@ -1,0 +1,54 @@
+import type { Response } from 'express';
+import { z } from 'zod';
+import { sql } from 'drizzle-orm';
+import { db } from '../../db/index.ts';
+import type { AuthRequest } from '../../shared/types.ts';
+import { AppError } from '../../shared/errors.ts';
+
+const money = z.coerce.number().finite().positive().max(99999999999);
+const uuid = z.string().uuid();
+const text = z.string().trim().min(1).max(240);
+const send = (res: Response, data: unknown, status = 200) => res.status(status).json({ data });
+const org = (req: AuthRequest) => req.user!.organizationId;
+const user = (req: AuthRequest) => req.user!.id;
+const body = <T extends z.ZodType>(schema: T, req: AuthRequest) => schema.parse(req.body) as z.infer<T>;
+async function validarCentro(centroId:string|undefined,organizacionId:string){if(!centroId)return;const r=await db.execute(sql`SELECT id FROM finance_centers WHERE id=${centroId} AND organization_id=${organizacionId} AND active=true`);if(!r.rows[0])throw new AppError(422,'Centro de costo inválido','INVALID_COST_CENTER');}
+
+export async function resumen(req: AuthRequest, res: Response) {
+  const o=org(req);
+  const [totals,accounts,docs,movements,budgets,centers,chart,journals,assets]=await Promise.all([
+    db.execute(sql`SELECT (COALESCE((SELECT SUM(opening_balance) FROM finance_accounts WHERE organization_id=${o} AND active=true),0)+COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0))::text AS net FROM finance_movements WHERE organization_id=${o}`),
+    db.execute(sql`SELECT a.*, (a.opening_balance+COALESCE(SUM(CASE WHEN m.direction='in' THEN m.amount ELSE -m.amount END),0))::text AS balance FROM finance_accounts a LEFT JOIN finance_movements m ON m.account_id=a.id WHERE a.organization_id=${o} GROUP BY a.id ORDER BY a.name`),
+    db.execute(sql`SELECT * FROM finance_documents WHERE organization_id=${o} AND status<>'void' ORDER BY due_date NULLS LAST,created_at DESC LIMIT 250`),
+    db.execute(sql`SELECT m.*,a.name AS account_name FROM finance_movements m JOIN finance_accounts a ON a.id=m.account_id WHERE m.organization_id=${o} ORDER BY moved_at DESC LIMIT 100`),
+    db.execute(sql`SELECT b.*,c.name AS center_name,COALESCE((SELECT SUM(d.amount) FROM finance_documents d WHERE d.organization_id=b.organization_id AND d.center_id IS NOT DISTINCT FROM b.center_id AND d.created_at::date BETWEEN b.period_start AND b.period_end AND d.kind IN ('expense','payable')),0)::text AS executed FROM finance_budgets b LEFT JOIN finance_centers c ON c.id=b.center_id WHERE b.organization_id=${o} ORDER BY period_start DESC LIMIT 100`),
+    db.execute(sql`SELECT * FROM finance_centers WHERE organization_id=${o} ORDER BY name`),
+    db.execute(sql`SELECT * FROM finance_chart_accounts WHERE organization_id=${o} AND active=true ORDER BY code`),
+    db.execute(sql`SELECT j.*,COALESCE(SUM(l.debit),0)::text AS debit,COALESCE(SUM(l.credit),0)::text AS credit FROM finance_journals j LEFT JOIN finance_journal_lines l ON l.journal_id=j.id WHERE j.organization_id=${o} GROUP BY j.id ORDER BY journal_date DESC,number DESC LIMIT 100`),
+    db.execute(sql`SELECT * FROM finance_assets WHERE organization_id=${o} AND active=true ORDER BY acquired_on DESC`),
+  ]);
+  send(res,{cashNet:totals.rows[0]?.net??'0',accounts:accounts.rows,documents:docs.rows,movements:movements.rows,budgets:budgets.rows,centers:centers.rows,chartAccounts:chart.rows,journals:journals.rows,assets:assets.rows});
+}
+
+const accountSchema=z.object({name:text,kind:z.enum(['cash','bank']),currency:z.string().length(3).default('BOB'),openingBalance:z.coerce.number().finite().default(0)});
+export async function crearCuenta(req:AuthRequest,res:Response){const b=body(accountSchema,req);const r=await db.execute(sql`INSERT INTO finance_accounts(organization_id,name,kind,currency,opening_balance) VALUES(${org(req)},${b.name},${b.kind},${b.currency.toUpperCase()},${b.openingBalance}) RETURNING *`);send(res,r.rows[0],201);}
+const centerSchema=z.object({name:text,code:z.string().trim().min(1).max(30)});
+export async function crearCentro(req:AuthRequest,res:Response){const b=body(centerSchema,req);const r=await db.execute(sql`INSERT INTO finance_centers(organization_id,name,code) VALUES(${org(req)},${b.name},${b.code}) RETURNING *`);send(res,r.rows[0],201);}
+const documentSchema=z.object({kind:z.enum(['receivable','payable','advance','expense']),description:text,partyName:z.string().trim().max(180).optional(),reference:z.string().trim().max(100).optional(),amount:money,dueDate:z.string().date().optional(),centerId:uuid.optional()});
+export async function crearDocumento(req:AuthRequest,res:Response){const b=body(documentSchema,req);await validarCentro(b.centerId,org(req));const r=await db.execute(sql`INSERT INTO finance_documents(organization_id,kind,description,party_name,reference,amount,due_date,center_id,created_by) VALUES(${org(req)},${b.kind},${b.description},${b.partyName??null},${b.reference??null},${b.amount},${b.dueDate??null},${b.centerId??null},${user(req)}) RETURNING *`);send(res,r.rows[0],201);}
+const movementSchema=z.object({accountId:uuid,documentId:uuid.optional(),direction:z.enum(['in','out']),amount:money,description:text,reference:z.string().trim().max(100).optional(),movedAt:z.string().datetime().optional()});
+export async function crearMovimiento(req:AuthRequest,res:Response){const b=body(movementSchema,req);const result=await db.transaction(async tx=>{
+ const accountResult=await tx.execute(sql`SELECT id FROM finance_accounts WHERE id=${b.accountId} AND organization_id=${org(req)} AND active=true FOR UPDATE`);if(!accountResult.rows[0])throw new AppError(404,'Cuenta de caja o banco no encontrada','FINANCE_ACCOUNT_NOT_FOUND');
+ let document:any=null;if(b.documentId){const dr=await tx.execute(sql`SELECT * FROM finance_documents WHERE id=${b.documentId} AND organization_id=${org(req)} FOR UPDATE`);const d=dr.rows[0] as any;if(!d||d.status==='void')throw new AppError(404,'Documento financiero no encontrado','FINANCE_DOCUMENT_NOT_FOUND');if((['receivable','advance'].includes(d.kind)&&b.direction!=='in')||(['payable','expense'].includes(d.kind)&&b.direction!=='out'))throw new AppError(422,'El sentido del movimiento no coincide con el documento','FINANCE_DIRECTION_MISMATCH');if(Number(d.paid_amount)+b.amount>Number(d.amount))throw new AppError(409,'El importe supera el saldo pendiente','FINANCE_OVERPAYMENT');document=d;}
+ const movementResult=await tx.execute(sql`INSERT INTO finance_movements(organization_id,account_id,document_id,direction,amount,description,reference,moved_at,created_by) VALUES(${org(req)},${b.accountId},${b.documentId??null},${b.direction},${b.amount},${b.description},${b.reference??null},${b.movedAt??new Date().toISOString()},${user(req)}) RETURNING *`);const row=movementResult.rows[0];
+ if(document){const paid=Number(document.paid_amount)+b.amount;await tx.execute(sql`UPDATE finance_documents SET paid_amount=${paid},status=${paid>=Number(document.amount)?'paid':'partial'} WHERE id=${document.id}`);}
+ return row;
+});send(res,result,201);}
+const budgetSchema=z.object({name:text,centerId:uuid.optional(),periodStart:z.string().date(),periodEnd:z.string().date(),amount:z.coerce.number().finite().nonnegative()});
+export async function crearPresupuesto(req:AuthRequest,res:Response){const b=body(budgetSchema,req);if(b.periodEnd<b.periodStart)throw new AppError(422,'El fin del periodo debe ser posterior al inicio','INVALID_PERIOD');await validarCentro(b.centerId,org(req));const r=await db.execute(sql`INSERT INTO finance_budgets(organization_id,center_id,name,period_start,period_end,amount) VALUES(${org(req)},${b.centerId??null},${b.name},${b.periodStart},${b.periodEnd},${b.amount}) RETURNING *`);send(res,r.rows[0],201);}
+const chartSchema=z.object({code:z.string().trim().min(1).max(30),name:text,class:z.enum(['asset','liability','equity','income','expense']),parentId:uuid.optional()});
+export async function crearCuentaContable(req:AuthRequest,res:Response){const b=body(chartSchema,req);if(b.parentId){const p=await db.execute(sql`SELECT id FROM finance_chart_accounts WHERE id=${b.parentId} AND organization_id=${org(req)} AND active=true`);if(!p.rows[0])throw new AppError(422,'Cuenta padre inválida','INVALID_PARENT_ACCOUNT');}const r=await db.execute(sql`INSERT INTO finance_chart_accounts(organization_id,code,name,class,parent_id) VALUES(${org(req)},${b.code},${b.name},${b.class},${b.parentId??null}) RETURNING *`);send(res,r.rows[0],201);}
+const journalSchema=z.object({journalDate:z.string().date(),description:text,source:z.string().trim().max(60).optional(),lines:z.array(z.object({accountId:uuid,centerId:uuid.optional(),debit:z.coerce.number().nonnegative(),credit:z.coerce.number().nonnegative()})).min(2).max(100)});
+export async function crearAsiento(req:AuthRequest,res:Response){const b=body(journalSchema,req);const debit=b.lines.reduce((s,l)=>s+l.debit,0),credit=b.lines.reduce((s,l)=>s+l.credit,0);if(debit===0||Math.round(debit*100)!==Math.round(credit*100)||b.lines.some(l=>l.debit>0&&l.credit>0))throw new AppError(422,'El asiento debe cuadrar y cada línea debe ser debe o haber','UNBALANCED_JOURNAL');const row=await db.transaction(async tx=>{for(const line of b.lines){const a=await tx.execute(sql`SELECT id FROM finance_chart_accounts WHERE id=${line.accountId} AND organization_id=${org(req)} AND active=true`);if(!a.rows[0])throw new AppError(422,'Cuenta contable inválida','INVALID_CHART_ACCOUNT');if(line.centerId){const c=await tx.execute(sql`SELECT id FROM finance_centers WHERE id=${line.centerId} AND organization_id=${org(req)} AND active=true`);if(!c.rows[0])throw new AppError(422,'Centro de costo inválido','INVALID_COST_CENTER');}}const jr=await tx.execute(sql`INSERT INTO finance_journals(organization_id,journal_date,description,source,created_by) VALUES(${org(req)},${b.journalDate},${b.description},${b.source??null},${user(req)}) RETURNING *`);const j=jr.rows[0];for(const l of b.lines)await tx.execute(sql`INSERT INTO finance_journal_lines(journal_id,account_id,center_id,debit,credit) VALUES(${j.id},${l.accountId},${l.centerId??null},${l.debit},${l.credit})`);return j;});send(res,row,201);}
+const assetSchema=z.object({name:text,acquiredOn:z.string().date(),cost:money,usefulLifeMonths:z.coerce.number().int().positive().max(1200),salvageValue:z.coerce.number().nonnegative().default(0)});
+export async function crearActivo(req:AuthRequest,res:Response){const b=body(assetSchema,req);if(b.salvageValue>=b.cost)throw new AppError(422,'El valor residual debe ser menor al costo','INVALID_SALVAGE_VALUE');const r=await db.execute(sql`INSERT INTO finance_assets(organization_id,name,acquired_on,cost,useful_life_months,salvage_value) VALUES(${org(req)},${b.name},${b.acquiredOn},${b.cost},${b.usefulLifeMonths},${b.salvageValue}) RETURNING *`);send(res,r.rows[0],201);}

@@ -1,0 +1,11 @@
+import type { Response } from 'express'; import type { AuthRequest } from '../../shared/types.ts'; import { idSchema } from '../../shared/schemas.ts'; import { ajusteInventarioSchema, consultaMovimientosSchema } from './inventario.schemas.ts'; import { InventarioService } from './inventario.service.ts';
+import * as avanzado from './inventario.avanzado.controller.ts';
+const service = new InventarioService(); const contexto = (req: AuthRequest) => ({ organizacionId: req.user!.organizationId, usuarioId: req.user!.id, ip: req.ip });
+export async function listarMovimientos(req: AuthRequest, res: Response) { const q = consultaMovimientosSchema.parse(req.query); const resultado = await service.listar(req.user!.organizationId, q); res.json({ data: resultado.data, meta: { pagina: q.pagina, limite: q.limite, total: resultado.total, paginas: Math.ceil(resultado.total / q.limite) } }); }
+export async function listarAlmacenes(req: AuthRequest, res: Response) { res.json({ data: await service.almacenes(req.user!.organizationId) }); }
+export async function listarExistencias(req: AuthRequest, res: Response) { const almacenId = req.query.almacenId ? idSchema.parse(req.query.almacenId) : undefined; res.json({ data: await service.existencias(req.user!.organizationId, almacenId) }); }
+export async function ajustarInventario(req: AuthRequest, res: Response) { res.status(201).json({ data: await service.ajustar(ajusteInventarioSchema.parse(req.body), contexto(req)) }); }
+export const listarLotes=avanzado.listarLotes;export const alertas=avanzado.alertas;export const cambiarEstadoLote=avanzado.cambiarEstadoLote;
+export const reservarLote=avanzado.reservarLote;export const liberarReserva=avanzado.liberarReserva;export const contarLote=avanzado.contarLote;
+export const crearPresentacion=avanzado.crearPresentacion;export const crearConversion=avanzado.crearConversion;export const transferirLote=avanzado.transferirLote;export const devolverLote=avanzado.devolverLote;
+export const listarPresentaciones=avanzado.listarPresentaciones;export const listarConversiones=avanzado.listarConversiones;export const listarCampanias=avanzado.listarCampanias;export const crearCampania=avanzado.crearCampania;export const salidaVinculada=avanzado.salidaVinculada;

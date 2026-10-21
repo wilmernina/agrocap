@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: agrosys-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agrosys
+      POSTGRES_USER: agrosys
+      POSTGRES_PASSWORD: agrosys
+      TZ: America/La_Paz
+    ports:
+      - "5432:5432"
+    volumes:
+      - agrosys_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agrosys -d agrosys"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  adminer:
+    image: adminer:4
+    container_name: agrosys-adminer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "8080:8080"
+
+volumes:
+  agrosys_postgres_data:

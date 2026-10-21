@@ -1,0 +1,36 @@
+import { and, asc, count, desc, eq, gte, lte, or } from 'drizzle-orm';
+import { db } from '../../db/index.ts';
+import { actividadesCampo, parcelas } from '../../db/schema-fase2.ts';
+import { asistencias, configuracionLaboral, empleados, feriados, periodosPlanilla } from '../../db/schema-fase3.ts';
+import { registrarAuditoria, type ContextoAuditoria } from '../../shared/auditoria.ts';
+import type { AsistenciaInput, ConsultaAsistencia } from './asistencias.schemas.ts';
+import { ConflictError } from '../../shared/errors.ts';
+
+export type AsistenciaCalculada = AsistenciaInput & { horasTrabajadas: string; horasExtra: string; horasExtraNocturnas: string; tipo: 'normal'|'feriado'|'domingo'|'licencia'|'vacacion'|'falta'|'permiso' };
+
+export class AsistenciasRepository {
+  async listar(org: string, q: ConsultaAsistencia) {
+    const filtro = and(eq(asistencias.organizacionId, org), q.empleado ? eq(asistencias.empleadoId, q.empleado) : undefined, q.desde ? gte(asistencias.fecha, q.desde) : undefined, q.hasta ? lte(asistencias.fecha, q.hasta) : undefined);
+    const [data, total] = await Promise.all([db.select({ asistencia: asistencias, empleado: empleados }).from(asistencias).innerJoin(empleados, eq(empleados.id, asistencias.empleadoId)).where(filtro).orderBy(desc(asistencias.fecha), asc(empleados.apellidos)).limit(q.limite).offset((q.pagina - 1) * q.limite), db.select({ valor: count() }).from(asistencias).where(filtro)]);
+    return { data, total: total[0]?.valor ?? 0 };
+  }
+  async porFecha(org: string, fecha: string) { return db.select({ asistencia: asistencias, empleado: empleados }).from(asistencias).innerJoin(empleados, eq(empleados.id, asistencias.empleadoId)).where(and(eq(asistencias.organizacionId, org), eq(asistencias.fecha, fecha))).orderBy(asc(empleados.apellidos), asc(empleados.nombres)); }
+  async obtener(org: string, id: string) { const [row] = await db.select({ asistencia: asistencias, empleado: empleados }).from(asistencias).innerJoin(empleados, eq(empleados.id, asistencias.empleadoId)).where(and(eq(asistencias.organizacionId, org), eq(asistencias.id, id))).limit(1); return row; }
+  async porEmpleadoFecha(org: string, empleadoId: string, fecha: string) { const [row] = await db.select().from(asistencias).where(and(eq(asistencias.organizacionId, org), eq(asistencias.empleadoId, empleadoId), eq(asistencias.fecha, fecha))).limit(1); return row; }
+  async empleado(org: string, id: string) { const [row] = await db.select().from(empleados).where(and(eq(empleados.organizacionId, org), eq(empleados.id, id))).limit(1); return row; }
+  async config(org: string, gestion: number) { const [row] = await db.select({ horasMesBase: configuracionLaboral.horasMesBase, diasMesBase: configuracionLaboral.diasMesBase }).from(configuracionLaboral).where(and(eq(configuracionLaboral.organizacionId, org), eq(configuracionLaboral.gestion, gestion), eq(configuracionLaboral.activo, true))).limit(1); return row; }
+  feriadosFecha(org: string, fecha: string) { return db.select({ tipo: feriados.tipo, departamento: feriados.departamento, nombre: feriados.nombre }).from(feriados).where(and(eq(feriados.organizacionId, org), eq(feriados.fecha, fecha), eq(feriados.activo, true))); }
+  async parcelaValida(org: string, id: string) { const [r] = await db.select({ id: parcelas.id }).from(parcelas).where(and(eq(parcelas.organizacionId, org), eq(parcelas.id, id), eq(parcelas.activo, true))).limit(1); return Boolean(r); }
+  async actividad(org: string, id: string) { const [r] = await db.select({ id: actividadesCampo.id, parcelaId: actividadesCampo.parcelaId }).from(actividadesCampo).where(and(eq(actividadesCampo.organizacionId, org), eq(actividadesCampo.id, id))).limit(1); return r; }
+  async usuarioEmpleado(org: string, usuarioId: string) { const [r] = await db.select({ id: empleados.id }).from(empleados).where(and(eq(empleados.organizacionId, org), eq(empleados.usuarioId, usuarioId), eq(empleados.estado, 'activo'))).limit(1); return r; }
+  async existeCodigoQr(org: string, empleadoId: string, codigo: string) { const [r] = await db.select({ id: empleados.id }).from(empleados).where(and(eq(empleados.organizacionId, org), eq(empleados.id, empleadoId), eq(empleados.codigo, codigo))).limit(1); return Boolean(r); }
+  private async periodoBloqueado(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], org: string, fecha: string) { const [p] = await tx.select({ id: periodosPlanilla.id }).from(periodosPlanilla).where(and(eq(periodosPlanilla.organizacionId, org), lte(periodosPlanilla.fechaInicio, fecha), gte(periodosPlanilla.fechaFin, fecha), or(eq(periodosPlanilla.estado, 'cerrado'), eq(periodosPlanilla.estado, 'pagado')))).limit(1); if (p) throw new ConflictError(`No se puede modificar asistencia de ${fecha}: el período de planilla está cerrado`); }
+  async crearLote(datos: AsistenciaCalculada[], ctx: ContextoAuditoria) { return db.transaction(async tx => { const salida = []; for (const dato of datos) { await this.periodoBloqueado(tx, ctx.organizacionId, dato.fecha); const [row] = await tx.insert(asistencias).values({ ...dato, organizacionId: ctx.organizacionId, registradoPor: ctx.usuarioId }).returning(); await registrarAuditoria(tx, ctx, 'CREAR', 'asistencias', row.id, null, row); salida.push(row); } return salida; }); }
+  async actualizar(org: string, id: string, datos: Partial<AsistenciaCalculada>, ctx: ContextoAuditoria) { return db.transaction(async tx => { const [antes] = await tx.select().from(asistencias).where(and(eq(asistencias.organizacionId, org), eq(asistencias.id, id))).for('update'); if (!antes) return undefined; await this.periodoBloqueado(tx, org, antes.fecha); const [row] = await tx.update(asistencias).set(datos).where(eq(asistencias.id, id)).returning(); await registrarAuditoria(tx, ctx, 'ACTUALIZAR', 'asistencias', id, antes, row); return row; }); }
+  async resumen(org: string, mes: number, gestion: number) {
+    const desde = `${gestion}-${String(mes).padStart(2,'0')}-01`, ultimoDia = new Date(Date.UTC(gestion, mes, 0)).getUTCDate(), hasta = `${gestion}-${String(mes).padStart(2,'0')}-${ultimoDia}`;
+    const personal = await db.select().from(empleados).where(eq(empleados.organizacionId, org)).orderBy(asc(empleados.apellidos), asc(empleados.nombres));
+    const marcas = await db.select().from(asistencias).where(and(eq(asistencias.organizacionId, org), gte(asistencias.fecha, desde), lte(asistencias.fecha, hasta)));
+    return personal.map(e => { const filas = marcas.filter(a => a.empleadoId === e.id); const trabajado = filas.filter(a => ['normal','feriado','domingo'].includes(a.tipo)); return { empleado: e, diasTrabajados: trabajado.length, faltas: filas.filter(a => a.tipo === 'falta').length, permisos: filas.filter(a => a.tipo === 'permiso').length, licencias: filas.filter(a => a.tipo === 'licencia').length, vacaciones: filas.filter(a => a.tipo === 'vacacion').length, horasTrabajadas: Number(filas.reduce((s,a)=>s+Number(a.horasTrabajadas),0).toFixed(2)), horasExtra: Number(filas.reduce((s,a)=>s+Number(a.horasExtra),0).toFixed(2)), horasExtraNocturnas: Number(filas.reduce((s,a)=>s+Number(a.horasExtraNocturnas),0).toFixed(2)), asistencias: filas }; }).filter(f => f.empleado.estado === 'activo' || f.asistencias.length > 0);
+  }
+}

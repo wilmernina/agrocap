@@ -1,0 +1,1 @@
+import type { Response } from 'express'; import type { AuthRequest } from '../../shared/types.ts'; import { DashboardService } from './dashboard.service.ts'; const service=new DashboardService(); export async function dashboard(req:AuthRequest,res:Response){res.json({data:await service.summary(req.user!.organizationId)});}

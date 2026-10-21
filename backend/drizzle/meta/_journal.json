@@ -1,0 +1,104 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1791849600000,
+      "tag": "0000_initial",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791930145155,
+      "tag": "0001_fase1_modelo_completo",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791930488631,
+      "tag": "0002_fase2_migrar_identidades",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791930834901,
+      "tag": "0003_fase3_migrar_catalogos",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791931311021,
+      "tag": "0004_fase4_migrar_inventario",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791932000000,
+      "tag": "0005_fase2_postgis_parcelas",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791933000000,
+      "tag": "0006_fase2_actividades_inventario",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791940000000,
+      "tag": "0007_fase3_personal_planillas",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792022400000,
+      "tag": "0008_fase4_pwa_gps",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792022500000,
+      "tag": "0009_fase4_sync_idempotente",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792108800000,
+      "tag": "0010_finanzas",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792195200000,
+      "tag": "0011_acopio_granos",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792281600000,
+      "tag": "0012_insumos_inventario_avanzado",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792368000000,
+      "tag": "0013_marca_agrocap",
+      "breakpoints": true
+    }
+  ]
+}
