@@ -327,12 +327,20 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 
 Use una contraseña aleatoria y larga. No abra el puerto `5432` en el firewall.
 
+También puedes automatizar la creación idempotente del usuario, la base, PostGIS y todas las tablas desde la raíz del repositorio. Primero crea `.env` como se indica abajo, instala dependencias con `npm ci` y luego ejecuta:
+
+```bash
+bash deploy/setup-database.sh
+```
+
+El script toma usuario, contraseña, nombre de base y puerto de `DATABASE_URL`, solo acepta PostgreSQL local y aplica las migraciones pendientes sin borrar datos existentes. Requiere PostgreSQL con PostGIS instalado y `sudo` configurado.
+
 ### 3. Instalar AgroCAP
 
 ```bash
 sudo mkdir -p /var/www/agrosys
 sudo chown -R "$USER":"$USER" /var/www/agrosys
-git clone URL_DE_SU_REPOSITORIO /var/www/agrosys
+git clone https://github.com/wilmernina/agrocap.git /var/www/agrosys
 cd /var/www/agrosys
 cp .env.production.example .env
 nano .env
@@ -343,6 +351,8 @@ npm run deploy:check
 ```
 
 En `.env`, sustituya el dominio, la contraseña PostgreSQL y ambos secretos JWT. Use `VITE_API_URL=/api/v1`; así navegador y API comparten origen. `npm run seed` es opcional y solo debe usarse si realmente se requieren datos demo.
+
+La base de datos se entrega junto al código como migraciones versionadas en `backend/drizzle`; `npm run migrate` crea toda la estructura y aplica los cambios en orden, incluida la extensión PostGIS. No se publica un volcado con información real: en un servidor nuevo la base empieza vacía. Si necesita registros de demostración, ejecute opcionalmente `npm run seed` antes de iniciar la API. El seed crea el usuario `admin@agrocap.bo` con contraseña `AgroSys2026!`; cambie esa contraseña inmediatamente y no lo use para datos reales.
 
 Inicie la API:
 
